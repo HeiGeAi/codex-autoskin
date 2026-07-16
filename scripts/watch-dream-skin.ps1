@@ -11,11 +11,14 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+. (Join-Path $PSScriptRoot 'file-io.ps1')
+. (Join-Path $PSScriptRoot 'process-ownership.ps1')
 $StateRoot = Join-Path $env:LOCALAPPDATA 'CodexDreamSkin'
 $StatePath = Join-Path $StateRoot 'state.json'
 $WatcherStatePath = Join-Path $StateRoot 'watcher-state.json'
 $LogPath = Join-Path $StateRoot 'watcher.log'
 $StartScript = Join-Path $PSScriptRoot 'start-dream-skin.ps1'
+$Injector = Join-Path $PSScriptRoot 'injector.mjs'
 New-Item -ItemType Directory -Force -Path $StateRoot | Out-Null
 
 $createdNew = $false
@@ -45,19 +48,19 @@ function Test-InjectorHealthy {
   try {
     $state = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
     if (-not $state.injectorPid) { return $false }
-    $process = Get-Process -Id ([int]$state.injectorPid) -ErrorAction Stop
-    return $process.ProcessName -eq 'node'
+    return Test-RecordedProcessOwnership -ProcessId ([int]$state.injectorPid) -ExpectedScriptPath $Injector
   } catch {
     return $false
   }
 }
 
-@{
+$watcherStateJson = @{
   watcherPid = $PID
   port = $Port
   startedAt = (Get-Date).ToString('o')
   scriptPath = $PSCommandPath
-} | ConvertTo-Json | Set-Content -LiteralPath $WatcherStatePath -Encoding utf8
+} | ConvertTo-Json
+Write-AtomicUtf8File -LiteralPath $WatcherStatePath -Content $watcherStateJson
 Write-WatcherLog "Watcher started (PID $PID, port $Port)."
 
 $consecutiveFailures = 0

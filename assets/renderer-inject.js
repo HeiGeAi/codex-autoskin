@@ -36,12 +36,23 @@
     for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
     return URL.createObjectURL(new Blob([bytes], { type: mime }));
   };
-  // Cheap per-theme art fingerprint (data URL lengths + base64 tail). Blob URLs
-  // from a previous injection are only reused when the fingerprints still match,
-  // so replacing a theme's art file takes effect on live re-injection without a
-  // renderer reload (stale blobs are revoked below).
+  // Content-wide per-theme art fingerprint. Image formats commonly have a fixed
+  // file tail, so length + tail can collide for two different same-size images.
+  // Two independent 32-bit rolling hashes keep the retained state tiny while
+  // making live image replacement reliably invalidate the previous blob URLs.
+  const contentSignature = (value) => {
+    let first = 0x811c9dc5;
+    let second = 0x9e3779b9;
+    for (let index = 0; index < value.length; index += 1) {
+      const code = value.charCodeAt(index);
+      first = Math.imul(first ^ code, 0x01000193);
+      second = Math.imul(second ^ code, 0x85ebca6b);
+      second ^= second >>> 13;
+    }
+    return `${value.length}:${(first >>> 0).toString(16)}:${(second >>> 0).toString(16)}`;
+  };
   const artSignature = (assets) =>
-    `${assets.home.length}:${assets.home.slice(-24)}|${assets.chat.length}:${assets.chat.slice(-24)}`;
+    `${contentSignature(assets.home)}|${contentSignature(assets.chat)}`;
   const artSigs = Object.fromEntries(
     Object.entries(artAssets).map(([theme, assets]) => [theme, artSignature(assets)])
   );

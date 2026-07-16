@@ -7,6 +7,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'file-io.ps1')
+. (Join-Path $PSScriptRoot 'process-ownership.ps1')
 $SkillRoot = Split-Path -Parent $PSScriptRoot
 $Injector = Join-Path $PSScriptRoot 'injector.mjs'
 $StateRoot = Join-Path $env:LOCALAPPDATA 'CodexDreamSkin'
@@ -93,10 +95,16 @@ while (-not (Test-CodexDebugPort $Port)) {
 }
 
 if (Test-Path -LiteralPath $StatePath) {
+  $recordedInjectorPid = $null
   try {
     $old = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
-    if ($old.injectorPid) { Stop-Process -Id ([int]$old.injectorPid) -Force -ErrorAction SilentlyContinue }
-  } catch {}
+    if ($old.injectorPid) { $recordedInjectorPid = [int]$old.injectorPid }
+  } catch {
+    Write-Warning "Could not read the previous injector state: $($_.Exception.Message)"
+  }
+  if ($recordedInjectorPid) {
+    [void](Stop-RecordedProcess -ProcessId $recordedInjectorPid -ExpectedScriptPath $Injector -Description 'injector')
+  }
 }
 
 if ($ForegroundInjector) {
@@ -105,20 +113,33 @@ if ($ForegroundInjector) {
 }
 
 $injectorArgs = @("`"$Injector`"", '--watch', '--port', "$Port")
-$daemon = Start-Process -FilePath $node -ArgumentList $injectorArgs -WindowStyle Hidden -PassThru -RedirectStandardOutput $StdoutPath -RedirectStandardError $StderrPath
-@{
-  port = $Port
-  injectorPid = $daemon.Id
-  startedAt = (Get-Date).ToString('o')
-  skillRoot = $SkillRoot
-  profilePath = $ProfilePath
-} | ConvertTo-Json | Set-Content -LiteralPath $StatePath -Encoding utf8
+$daemon = $null
+try {
+  $daemon = Start-Process -FilePath $node -ArgumentList $injectorArgs -WindowStyle Hidden -PassThru -RedirectStandardOutput $StdoutPath -RedirectStandardError $StderrPath
+  $stateJson = @{
+    port = $Port
+    injectorPid = $daemon.Id
+    startedAt = (Get-Date).ToString('o')
+    skillRoot = $SkillRoot
+    profilePath = $ProfilePath
+  } | ConvertTo-Json
+  Write-AtomicUtf8File -LiteralPath $StatePath -Content $stateJson
 
-$verified = $false
-for ($attempt = 0; $attempt -lt 45; $attempt++) {
-  Start-Sleep -Milliseconds 700
-  & $node $Injector --verify --port $Port *> $null
-  if ($LASTEXITCODE -eq 0) { $verified = $true; break }
+  $verified = $false
+  for ($attempt = 0; $attempt -lt 45; $attempt++) {
+    Start-Sleep -Milliseconds 700
+    & $node $Injector --verify --port $Port *> $null
+    if ($LASTEXITCODE -eq 0) { $verified = $true; break }
+  }
+  if (-not $verified) { throw 'Dream skin launched but verification failed. See injector logs.' }
+} catch {
+  if ($daemon) {
+    $stopped = Stop-RecordedProcess -ProcessId ([int]$daemon.Id) -ExpectedScriptPath $Injector -Description 'injector'
+    if (-not $stopped) {
+      try { if (-not $daemon.HasExited) { $daemon.Kill() } } catch {}
+    }
+  }
+  Remove-Item -LiteralPath $StatePath -Force -ErrorAction SilentlyContinue
+  throw
 }
-if (-not $verified) { throw 'Dream skin launched but verification failed. See injector logs.' }
 Write-Host "Codex Dream Skin is active on port $Port."

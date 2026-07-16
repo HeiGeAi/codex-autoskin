@@ -1,6 +1,5 @@
 ---
 name: codex-autoskin
-version: 2.0.0
 description: Apply, launch, verify, theme-switch, repair, update, or restore a full decorative skin for the Windows Codex desktop app. Use when the user asks for a Codex theme beyond official color settings, wants a custom image turned into a skin theme, needs the skin reapplied after a Codex update, or needs a safe rollback without modifying WindowsApps or app.asar.
 ---
 

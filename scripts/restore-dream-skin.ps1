@@ -6,29 +6,52 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'file-io.ps1')
+. (Join-Path $PSScriptRoot 'process-ownership.ps1')
 $node = (Get-Command node -ErrorAction Stop).Source
 $injector = Join-Path $PSScriptRoot 'injector.mjs'
 $StateRoot = Join-Path $env:LOCALAPPDATA 'CodexDreamSkin'
 $StatePath = Join-Path $StateRoot 'state.json'
 $WatcherStatePath = Join-Path $StateRoot 'watcher-state.json'
+$EffectivePort = $Port
+$watchScript = Join-Path $PSScriptRoot 'watch-dream-skin.ps1'
 
 if (Test-Path -LiteralPath $WatcherStatePath) {
+  $recordedWatcherPid = $null
   try {
     $watcherState = Get-Content -LiteralPath $WatcherStatePath -Raw | ConvertFrom-Json
-    if ($watcherState.watcherPid) { Stop-Process -Id ([int]$watcherState.watcherPid) -Force -ErrorAction SilentlyContinue }
-  } catch {}
+    if ($watcherState.watcherPid) { $recordedWatcherPid = [int]$watcherState.watcherPid }
+  } catch {
+    Write-Warning "Could not read the watcher state: $($_.Exception.Message)"
+  }
+  if ($recordedWatcherPid) {
+    [void](Stop-RecordedProcess -ProcessId $recordedWatcherPid -ExpectedScriptPath $watchScript -Description 'watcher')
+  }
   Remove-Item -LiteralPath $WatcherStatePath -Force -ErrorAction SilentlyContinue
 }
 
 if (Test-Path -LiteralPath $StatePath) {
+  $recordedInjectorPid = $null
   try {
     $state = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
-    if ($state.injectorPid) { Stop-Process -Id ([int]$state.injectorPid) -Force -ErrorAction SilentlyContinue }
-  } catch {}
-  Remove-Item -LiteralPath $StatePath -Force -ErrorAction SilentlyContinue
+    if (-not $PSBoundParameters.ContainsKey('Port') -and $state.port) { $EffectivePort = [int]$state.port }
+    if ($state.injectorPid) { $recordedInjectorPid = [int]$state.injectorPid }
+  } catch {
+    Write-Warning "Could not read the injector state: $($_.Exception.Message)"
+  }
+  if ($recordedInjectorPid) {
+    [void](Stop-RecordedProcess -ProcessId $recordedInjectorPid -ExpectedScriptPath $injector -Description 'injector')
+  }
 }
 Start-Sleep -Milliseconds 250
-try { & $node $injector --remove --port $Port --timeout-ms 3000 } catch {}
+$codexRunning = @(Get-Process ChatGPT -ErrorAction SilentlyContinue).Count -gt 0
+$removeOutput = @(& $node $injector --remove --port $EffectivePort --timeout-ms 3000 2>&1)
+$removeExitCode = $LASTEXITCODE
+if ($removeExitCode -ne 0 -and $codexRunning) {
+  $detail = ($removeOutput | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+  throw "Failed to remove the live Dream Skin from Codex on port $EffectivePort (injector exit $removeExitCode). $detail"
+}
+Remove-Item -LiteralPath $StatePath -Force -ErrorAction SilentlyContinue
 
 if ($Uninstall) {
   $desktop = [Environment]::GetFolderPath('Desktop')
@@ -64,7 +87,11 @@ if ($RestoreBaseTheme) {
         $currentContent.Substring($desktop.Groups['body'].Index + $desktop.Groups['body'].Length)
     }
   }
-  Set-Content -LiteralPath $config -Value $currentContent -Encoding utf8
+  Write-AtomicUtf8File -LiteralPath $config -Content $currentContent
+  # The backup represents the state immediately before one install lifecycle.
+  # Consume it after a successful restore so a later reinstall snapshots the
+  # user's then-current official theme instead of reusing stale first-run data.
+  Remove-Item -LiteralPath $backup -Force
 }
 
 Write-Host 'The live Dream Skin was removed.'

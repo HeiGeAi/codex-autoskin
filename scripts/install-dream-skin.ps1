@@ -6,13 +6,17 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'file-io.ps1')
+. (Join-Path $PSScriptRoot 'process-ownership.ps1')
 $SkillRoot = Split-Path -Parent $PSScriptRoot
 $StateRoot = Join-Path $env:LOCALAPPDATA 'CodexDreamSkin'
 New-Item -ItemType Directory -Force -Path $StateRoot | Out-Null
 $ConfigPath = Join-Path $HOME '.codex\config.toml'
 $BackupPath = Join-Path $StateRoot 'config.before-dream-skin.toml'
 if (-not (Test-Path -LiteralPath $ConfigPath)) { throw "Codex config not found: $ConfigPath" }
-if (-not (Test-Path -LiteralPath $BackupPath)) { Copy-Item -LiteralPath $ConfigPath -Destination $BackupPath }
+if (-not (Test-Path -LiteralPath $BackupPath)) {
+  Copy-FileAtomically -SourcePath $ConfigPath -DestinationPath $BackupPath
+}
 
 $content = Get-Content -LiteralPath $ConfigPath -Raw
 $desktopMatch = [regex]::Match($content, '(?ms)^\[desktop\]\s*\r?\n(?<body>.*?)(?=^\[|\z)')
@@ -32,7 +36,7 @@ foreach ($key in $settings.Keys) {
   else { $body = $body.TrimEnd() + "`r`n" + $settings[$key] + "`r`n" }
 }
 $content = $content.Substring(0, $desktopMatch.Groups['body'].Index) + $body + $content.Substring($desktopMatch.Groups['body'].Index + $desktopMatch.Groups['body'].Length)
-Set-Content -LiteralPath $ConfigPath -Value $content -Encoding utf8
+Write-AtomicUtf8File -LiteralPath $ConfigPath -Content $content
 
 if (-not $NoShortcuts) {
   $shell = New-Object -ComObject WScript.Shell
@@ -72,10 +76,16 @@ if (-not $NoAutoRecover) {
 
   $watcherStatePath = Join-Path $StateRoot 'watcher-state.json'
   if (Test-Path -LiteralPath $watcherStatePath) {
+    $recordedWatcherPid = $null
     try {
       $watcherState = Get-Content -LiteralPath $watcherStatePath -Raw | ConvertFrom-Json
-      if ($watcherState.watcherPid) { Stop-Process -Id ([int]$watcherState.watcherPid) -Force -ErrorAction SilentlyContinue }
-    } catch {}
+      if ($watcherState.watcherPid) { $recordedWatcherPid = [int]$watcherState.watcherPid }
+    } catch {
+      Write-Warning "Could not read the previous watcher state: $($_.Exception.Message)"
+    }
+    if ($recordedWatcherPid) {
+      [void](Stop-RecordedProcess -ProcessId $recordedWatcherPid -ExpectedScriptPath $watchScript -Description 'watcher')
+    }
     Remove-Item -LiteralPath $watcherStatePath -Force -ErrorAction SilentlyContinue
   }
   Start-Process -FilePath $powershell -WindowStyle Hidden -ArgumentList @(

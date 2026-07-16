@@ -312,6 +312,30 @@ function normalizeStickers(name, config) {
 
 const MIME_BY_EXT = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" };
 
+async function readRegularThemeFile(filePath, encoding = null) {
+  const stats = await fs.lstat(filePath);
+  if (!stats.isFile()) {
+    const error = new Error("theme assets must be regular files");
+    error.code = "DREAM_NON_REGULAR_FILE";
+    throw error;
+  }
+  return fs.readFile(filePath, encoding ?? undefined);
+}
+
+function imageBytesMatchExtension(buffer, extension) {
+  if (extension === ".png") {
+    return buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  }
+  if (extension === ".jpg" || extension === ".jpeg") {
+    return buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  }
+  if (extension === ".webp") {
+    return buffer.length >= 12 && buffer.subarray(0, 4).toString("ascii") === "RIFF" &&
+      buffer.subarray(8, 12).toString("ascii") === "WEBP";
+  }
+  return false;
+}
+
 // Split a CSS block body into top-level rules ({prelude, body}) without parsing
 // the full grammar. Comments must already be stripped.
 function extractTopLevelRules(css) {
@@ -397,8 +421,11 @@ async function loadThemeDir(baseName, dirName) {
   const manifestPath = path.join(dir, "theme.json");
   let raw;
   try {
-    raw = await fs.readFile(manifestPath, "utf8");
-  } catch {
+    raw = await readRegularThemeFile(manifestPath, "utf8");
+  } catch (error) {
+    if (error.code === "DREAM_NON_REGULAR_FILE") {
+      warn(`theme folder "${baseName}/${dirName}" skipped: theme.json must be a regular file inside the theme folder`);
+    }
     return null; // not a theme folder
   }
   const name = dirName;
@@ -411,6 +438,10 @@ async function loadThemeDir(baseName, dirName) {
     config = JSON.parse(raw);
   } catch (error) {
     warn(`theme "${name}" skipped: theme.json is not valid JSON (${error.message})`);
+    return null;
+  }
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    warn(`theme "${name}" skipped: theme.json must contain an object`);
     return null;
   }
   if (config.name && config.name !== name) {
@@ -443,18 +474,32 @@ async function loadThemeDir(baseName, dirName) {
       continue;
     }
     try {
-      const buffer = await fs.readFile(path.join(dir, file));
-      const mime = MIME_BY_EXT[path.extname(file).toLowerCase()] ?? "image/png";
+      const buffer = await readRegularThemeFile(path.join(dir, file));
+      const extension = path.extname(file).toLowerCase();
+      if (!imageBytesMatchExtension(buffer, extension)) {
+        const label = extension === ".png" ? "PNG" : extension === ".webp" ? "WebP" : "JPEG";
+        warn(`theme "${name}" skipped: art file is not a valid ${label} image: ${path.join(baseName, dirName, file)}`);
+        return null;
+      }
+      const mime = MIME_BY_EXT[extension] ?? "image/png";
       artUrls[role] = `data:${mime};base64,${buffer.toString("base64")}`;
-    } catch {
+    } catch (error) {
+      if (error.code === "DREAM_NON_REGULAR_FILE") {
+        warn(`theme "${name}" skipped: art file must be a regular file inside the theme folder: ${path.join(baseName, dirName, file)}`);
+        return null;
+      }
       warn(`theme "${name}" skipped: art file not found: ${path.join(baseName, dirName, file)}`);
       return null;
     }
   }
   let extraCss = null;
   try {
-    extraCss = await fs.readFile(path.join(dir, "extra.css"), "utf8");
-  } catch {}
+    extraCss = await readRegularThemeFile(path.join(dir, "extra.css"), "utf8");
+  } catch (error) {
+    if (error.code === "DREAM_NON_REGULAR_FILE") {
+      warn(`theme "${name}": extra.css must be a regular file inside the theme folder; file ignored`);
+    }
+  }
   if (extraCss !== null) {
     const scopeErrors = validateExtraCssScope(extraCss, name);
     if (scopeErrors.length) {
