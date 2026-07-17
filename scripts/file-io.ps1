@@ -18,7 +18,14 @@ function Complete-AtomicFileWrite {
 
   $fullPath = [System.IO.Path]::GetFullPath($LiteralPath)
   if ([System.IO.File]::Exists($fullPath)) {
-    [void][System.IO.File]::Replace($TempPath, $fullPath, $null)
+    $replaceBackupPath = Get-AtomicTempPath -LiteralPath "$fullPath.replace-backup"
+    try {
+      [void][System.IO.File]::Replace($TempPath, $fullPath, $replaceBackupPath)
+    } finally {
+      if ([System.IO.File]::Exists($replaceBackupPath)) {
+        [System.IO.File]::Delete($replaceBackupPath)
+      }
+    }
   } else {
     [System.IO.File]::Move($TempPath, $fullPath)
   }

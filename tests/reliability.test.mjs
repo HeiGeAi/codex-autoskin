@@ -81,6 +81,9 @@ test("agent metadata invokes the skill name declared by SKILL.md", async () => {
 test("PowerShell config and state files are committed through the atomic writer", async () => {
   const helper = await fs.readFile(path.join(repoRoot, "scripts", "file-io.ps1"), "utf8");
   assert.match(helper, /\[System\.IO\.File\]::Replace\(/);
+  assert.doesNotMatch(helper, /::Replace\(\$TempPath,\s*\$fullPath,\s*\$null\)/);
+  assert.match(helper, /::Replace\(\$TempPath,\s*\$fullPath,\s*\$replaceBackupPath\)/);
+  assert.match(helper, /::Delete\(\$replaceBackupPath\)/);
   assert.match(helper, /\[System\.IO\.File\]::Move\(/);
   const expectations = new Map([
     ["install-dream-skin.ps1", [/Write-AtomicUtf8File[^\n]+\$ConfigPath/, /Copy-FileAtomically[^\n]+\$BackupPath/]],
