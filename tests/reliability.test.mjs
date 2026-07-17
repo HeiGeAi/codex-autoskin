@@ -69,7 +69,7 @@ test("agent metadata invokes the skill name declared by SKILL.md", async () => {
   const skill = await fs.readFile(path.join(repoRoot, "SKILL.md"), "utf8");
   const metadata = await fs.readFile(path.join(repoRoot, "agents", "openai.yaml"), "utf8");
   assert.deepEqual(skillFrontmatterKeys(skill), ["name", "description"]);
-  assert.deepEqual(skillFrontmatterKeys(skill.replaceAll("\n", "\r\n")), ["name", "description"]);
+  assert.deepEqual(skillFrontmatterKeys(skill.replace(/\r?\n/g, "\r\n")), ["name", "description"]);
   const declaredName = skill.match(/^name:\s*([^\s]+)$/m)?.[1];
   assert.ok(declaredName, "SKILL.md must declare a skill name");
   assert.match(metadata, new RegExp(`\\$${declaredName}(?:\\s|$)`));
