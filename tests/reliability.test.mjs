@@ -12,6 +12,11 @@ const injectorPath = path.join(repoRoot, "scripts", "injector.mjs");
 const rendererPath = path.join(repoRoot, "assets", "renderer-inject.js");
 const demoThemePath = path.join(repoRoot, "themes", "aurora-veil");
 
+function skillFrontmatterKeys(source) {
+  const frontmatter = source.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? "";
+  return [...frontmatter.matchAll(/^([a-z][a-z0-9_-]*):/gm)].map((match) => match[1]);
+}
+
 test("the runtime gate rejects Node 20 and a missing global WebSocket", async () => {
   const { assertSupportedRuntime } = await import("../scripts/runtime-compat.mjs");
   assert.throws(
@@ -63,9 +68,8 @@ test("VERSION is the renderer and documentation truth source", async () => {
 test("agent metadata invokes the skill name declared by SKILL.md", async () => {
   const skill = await fs.readFile(path.join(repoRoot, "SKILL.md"), "utf8");
   const metadata = await fs.readFile(path.join(repoRoot, "agents", "openai.yaml"), "utf8");
-  const frontmatter = skill.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
-  const frontmatterKeys = [...frontmatter.matchAll(/^([a-z][a-z0-9_-]*):/gm)].map((match) => match[1]);
-  assert.deepEqual(frontmatterKeys, ["name", "description"]);
+  assert.deepEqual(skillFrontmatterKeys(skill), ["name", "description"]);
+  assert.deepEqual(skillFrontmatterKeys(skill.replaceAll("\n", "\r\n")), ["name", "description"]);
   const declaredName = skill.match(/^name:\s*([^\s]+)$/m)?.[1];
   assert.ok(declaredName, "SKILL.md must declare a skill name");
   assert.match(metadata, new RegExp(`\\$${declaredName}(?:\\s|$)`));

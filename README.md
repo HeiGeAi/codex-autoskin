@@ -79,6 +79,8 @@ scripts\restore-dream-skin.ps1 -Uninstall -RestoreBaseTheme
 
 仓库的便携回归用 `node --test tests/reliability.test.mjs` 运行。核心生命周期另有 `tests\windows-powershell-selftest.ps1`，在 GitHub Actions 的 `windows-latest` 上用 Windows PowerShell 5.1 和 Node.js 22 实跑，覆盖进程归属、错误 executable/argv、state 保留、`-NoAutoRecover` 与分阶段 restore。macOS 上的静态检查不能替代这道 Windows 发布闸门。
 
+测试和重新生成内置 demo 图片前，先运行 `python -m pip install -r tools/requirements.txt` 安装固定大版本范围内的 NumPy 与 Pillow。
+
 ## 免责声明
 
 - 本项目是装饰性的社区项目，**与 OpenAI 无关，非官方项目**；Codex 及相关商标归其权利人所有。
