@@ -1,4 +1,4 @@
-((cssText, artAssets, manifest) => {
+((cssText, artAssets, manifest, autoSkinVersion) => {
   const STATE_KEY = "__CODEX_DREAM_SKIN_STATE__";
   const STYLE_ID = "codex-dream-skin-style";
   const CHROME_ID = "codex-dream-skin-chrome";
@@ -258,8 +258,26 @@
     chrome.classList.toggle("dream-home-shell", Boolean(home));
   };
 
+  const clearDreamInlineProperties = () => {
+    const styledElements = new Set([
+      document.documentElement,
+      ...document.querySelectorAll("[style]"),
+    ]);
+    for (const element of styledElements) {
+      if (!element?.style) continue;
+      for (let index = element.style.length - 1; index >= 0; index -= 1) {
+        const property = element.style.item(index);
+        if (property.startsWith("--dream-")) element.style.removeProperty(property);
+      }
+    }
+  };
+
   const cleanup = () => {
     window.__CODEX_DREAM_SKIN_DISABLED__ = true;
+    const state = window[STATE_KEY];
+    state?.observer?.disconnect();
+    if (state?.timer) clearInterval(state.timer);
+    if (state?.scheduler?.timeout) clearTimeout(state.scheduler.timeout);
     const rootElement = document.documentElement;
     if (rootElement) {
       for (const cls of [...rootElement.classList]) {
@@ -267,25 +285,20 @@
           rootElement.classList.remove(cls);
         }
       }
-      rootElement.style.removeProperty("--dream-art");
-      rootElement.style.removeProperty("--dream-home-art");
-      rootElement.style.removeProperty("--dream-chat-art");
     }
+    clearDreamInlineProperties();
     document.querySelectorAll(".dream-home").forEach((node) => node.classList.remove("dream-home"));
     document.querySelectorAll(".dream-home-shell").forEach((node) => node.classList.remove("dream-home-shell"));
     document.querySelectorAll(".dream-new-task").forEach((node) => node.classList.remove("dream-new-task"));
     document.getElementById(STYLE_ID)?.remove();
     document.getElementById(CHROME_ID)?.remove();
     document.getElementById(LEGACY_CONTROLS_ID)?.remove();
-    const state = window[STATE_KEY];
-    state?.observer?.disconnect();
-    if (state?.timer) clearInterval(state.timer);
-    if (state?.scheduler?.timeout) clearTimeout(state.scheduler.timeout);
     for (const assets of Object.values(state?.artUrls || {})) {
       if (assets.home) URL.revokeObjectURL(assets.home);
       if (assets.chat && assets.chat !== assets.home) URL.revokeObjectURL(assets.chat);
     }
     delete window[STATE_KEY];
+    delete window.__CODEX_DREAM_SKIN_DISABLED__;
     return true;
   };
 
@@ -315,8 +328,8 @@
     setLayout: applyLayout,
     get theme() { return activeTheme; },
     setTheme: applyTheme,
-    version: "2.2.0"
+    version: autoSkinVersion
   };
   ensure();
-  return { installed: true, version: "2.2.0", layout: activeLayout, theme: activeTheme, themes: [...THEME_ORDER] };
-})(__DREAM_CSS_JSON__, __DREAM_ART_ASSETS_JSON__, __DREAM_MANIFEST_JSON__)
+  return { installed: true, version: autoSkinVersion, layout: activeLayout, theme: activeTheme, themes: [...THEME_ORDER] };
+})(__DREAM_CSS_JSON__, __DREAM_ART_ASSETS_JSON__, __DREAM_MANIFEST_JSON__, __CODEX_AUTOSKIN_VERSION_JSON__)

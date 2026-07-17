@@ -11,11 +11,35 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'process-ownership.ps1')
 $SkillRoot = Split-Path -Parent $PSScriptRoot
 $Injector = Join-Path $PSScriptRoot 'injector.mjs'
+$node = (Get-Command node -ErrorAction Stop).Source
+$runtimeCheck = Join-Path $PSScriptRoot 'runtime-compat.mjs'
+& $node $runtimeCheck --quiet
+if ($LASTEXITCODE -ne 0) { throw 'Node runtime compatibility check failed; Codex was not restarted.' }
 $StateRoot = Join-Path $env:LOCALAPPDATA 'CodexDreamSkin'
 $StatePath = Join-Path $StateRoot 'state.json'
 $StdoutPath = Join-Path $StateRoot 'injector.log'
 $StderrPath = Join-Path $StateRoot 'injector-error.log'
 New-Item -ItemType Directory -Force -Path $StateRoot | Out-Null
+
+if (Test-Path -LiteralPath $StatePath) {
+  try {
+    $old = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+    if (-not $old.injectorPid) { throw 'Previous injector state has no injectorPid.' }
+    $recordedInjectorPath = Resolve-RecordedScriptPath -State $old -ExpectedLeafName 'injector.mjs' -RelativePathFromSkillRoot 'scripts\injector.mjs' -FallbackPath $Injector
+    $recordedNodePath = Resolve-RecordedExecutablePath -State $old -FallbackPath $node
+  } catch {
+    throw "Could not validate the previous injector state; state was preserved: $($_.Exception.Message)"
+  }
+  $recordedStartTime = if ($old.processStartTimeUtc) { [string]$old.processStartTimeUtc } else { $null }
+  $stopResult = Stop-RecordedProcess -ProcessId ([int]$old.injectorPid) -ExpectedScriptPath $recordedInjectorPath -ExpectedExecutablePath $recordedNodePath -ScriptArgumentMode 'NodeEntryPoint' -ExpectedProcessStartTimeUtc $recordedStartTime -Description 'injector'
+  if (-not $stopResult.Success) {
+    throw "Could not safely replace the previous injector; state was preserved. $($stopResult.Message)"
+  }
+  if (-not $stopResult.CanDiscardState) {
+    throw 'Previous injector reconciliation did not confirm that its state can be discarded.'
+  }
+  Remove-Item -LiteralPath $StatePath -Force -ErrorAction Stop
+}
 
 function Test-CodexDebugPort([int]$CandidatePort) {
   # Chromium may bind DevTools to either loopback stack depending on boot state;
@@ -47,7 +71,6 @@ function Stop-CodexCompletely {
   Start-Sleep -Milliseconds 300
 }
 
-$node = (Get-Command node -ErrorAction Stop).Source
 $debugReady = Test-CodexDebugPort $Port
 $mainProcesses = @(Get-Process ChatGPT -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
 
@@ -94,19 +117,6 @@ while (-not (Test-CodexDebugPort $Port)) {
   Stop-CodexCompletely
 }
 
-if (Test-Path -LiteralPath $StatePath) {
-  $recordedInjectorPid = $null
-  try {
-    $old = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
-    if ($old.injectorPid) { $recordedInjectorPid = [int]$old.injectorPid }
-  } catch {
-    Write-Warning "Could not read the previous injector state: $($_.Exception.Message)"
-  }
-  if ($recordedInjectorPid) {
-    [void](Stop-RecordedProcess -ProcessId $recordedInjectorPid -ExpectedScriptPath $Injector -Description 'injector')
-  }
-}
-
 if ($ForegroundInjector) {
   & $node $Injector --watch --port $Port
   exit $LASTEXITCODE
@@ -117,10 +127,15 @@ $daemon = $null
 try {
   $daemon = Start-Process -FilePath $node -ArgumentList $injectorArgs -WindowStyle Hidden -PassThru -RedirectStandardOutput $StdoutPath -RedirectStandardError $StderrPath
   $stateJson = @{
+    schemaVersion = 2
+    component = 'injector'
     port = $Port
     injectorPid = $daemon.Id
+    processStartTimeUtc = $daemon.StartTime.ToUniversalTime().ToString('o')
     startedAt = (Get-Date).ToString('o')
     skillRoot = $SkillRoot
+    scriptPath = $Injector
+    executablePath = $node
     profilePath = $ProfilePath
   } | ConvertTo-Json
   Write-AtomicUtf8File -LiteralPath $StatePath -Content $stateJson
@@ -133,13 +148,30 @@ try {
   }
   if (-not $verified) { throw 'Dream skin launched but verification failed. See injector logs.' }
 } catch {
+  $launchError = $_.Exception
+  $stateCanBeRemoved = $null -eq $daemon
   if ($daemon) {
-    $stopped = Stop-RecordedProcess -ProcessId ([int]$daemon.Id) -ExpectedScriptPath $Injector -Description 'injector'
-    if (-not $stopped) {
-      try { if (-not $daemon.HasExited) { $daemon.Kill() } } catch {}
+    $daemonStartTime = $null
+    try { $daemonStartTime = $daemon.StartTime.ToUniversalTime().ToString('o') } catch {}
+    $stopResult = Stop-RecordedProcess -ProcessId ([int]$daemon.Id) -ExpectedScriptPath $Injector -ExpectedExecutablePath $node -ScriptArgumentMode 'NodeEntryPoint' -ExpectedProcessStartTimeUtc $daemonStartTime -Description 'injector'
+    $stateCanBeRemoved = $stopResult.CanDiscardState
+    if (-not $stopResult.Success) {
+      try {
+        if (-not $daemon.HasExited) {
+          $daemon.Kill()
+          $stateCanBeRemoved = $daemon.WaitForExit(5000)
+        } else {
+          $stateCanBeRemoved = $true
+        }
+      } catch {
+        $stateCanBeRemoved = $false
+      }
     }
   }
-  Remove-Item -LiteralPath $StatePath -Force -ErrorAction SilentlyContinue
-  throw
+  if ($stateCanBeRemoved) {
+    Remove-Item -LiteralPath $StatePath -Force -ErrorAction SilentlyContinue
+    throw $launchError
+  }
+  throw "$($launchError.Message) Injector cleanup could not confirm process exit; state was preserved."
 }
 Write-Host "Codex Dream Skin is active on port $Port."

@@ -9,6 +9,10 @@
 // inside the main renderer and persists via localStorage, so it survives reloads
 // and restarts recovered by the watcher.
 
+import { assertSupportedRuntime } from "./runtime-compat.mjs";
+
+assertSupportedRuntime();
+
 const LAYOUTS = new Set(["banner", "fullscreen"]);
 
 function parseArgs(argv) {

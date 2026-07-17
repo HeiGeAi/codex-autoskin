@@ -19,6 +19,7 @@ $WatcherStatePath = Join-Path $StateRoot 'watcher-state.json'
 $LogPath = Join-Path $StateRoot 'watcher.log'
 $StartScript = Join-Path $PSScriptRoot 'start-dream-skin.ps1'
 $Injector = Join-Path $PSScriptRoot 'injector.mjs'
+$Node = (Get-Command node -ErrorAction SilentlyContinue).Source
 New-Item -ItemType Directory -Force -Path $StateRoot | Out-Null
 
 $createdNew = $false
@@ -43,22 +44,47 @@ function Test-DreamDebugPort {
   return $false
 }
 
-function Test-InjectorHealthy {
-  if (-not (Test-Path -LiteralPath $StatePath)) { return $false }
-  try {
-    $state = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
-    if (-not $state.injectorPid) { return $false }
-    return Test-RecordedProcessOwnership -ProcessId ([int]$state.injectorPid) -ExpectedScriptPath $Injector
-  } catch {
-    return $false
-  }
+function New-InjectorHealthResult([string]$Status, [string]$Message) {
+  return [pscustomobject]@{ Status = $Status; Message = $Message }
 }
 
+function Get-InjectorHealth {
+  if (-not (Test-Path -LiteralPath $StatePath)) {
+    return New-InjectorHealthResult -Status 'missing' -Message 'Injector state is absent.'
+  }
+  try {
+    $state = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+    if (-not $state.injectorPid) { throw 'Injector state has no injectorPid.' }
+    if (-not $Node -and -not $state.executablePath) { throw 'Node executable is unavailable and injector state has no executablePath.' }
+    $expectedInjectorPath = Resolve-RecordedScriptPath -State $state -ExpectedLeafName 'injector.mjs' -RelativePathFromSkillRoot 'scripts\injector.mjs' -FallbackPath $Injector
+    $nodeFallback = if ($Node) { $Node } else { [string]$state.executablePath }
+    $expectedNodePath = Resolve-RecordedExecutablePath -State $state -FallbackPath $nodeFallback
+    $recordedStartTime = if ($state.processStartTimeUtc) { [string]$state.processStartTimeUtc } else { $null }
+  } catch {
+    return New-InjectorHealthResult -Status 'ownership-failed' -Message "Injector state cannot be trusted: $($_.Exception.Message)"
+  }
+
+  $ownership = Get-RecordedProcessOwnership -ProcessId ([int]$state.injectorPid) -ExpectedScriptPath $expectedInjectorPath -ExpectedExecutablePath $expectedNodePath -ScriptArgumentMode 'NodeEntryPoint' -ExpectedProcessStartTimeUtc $recordedStartTime
+  if ($ownership.Status -eq 'owned') {
+    return New-InjectorHealthResult -Status 'healthy' -Message $ownership.Message
+  }
+  if ($ownership.Status -eq 'not-running') {
+    return New-InjectorHealthResult -Status 'missing' -Message $ownership.Message
+  }
+  return New-InjectorHealthResult -Status $ownership.Status -Message $ownership.Message
+}
+
+$watcherProcess = Get-Process -Id $PID -ErrorAction Stop
 $watcherStateJson = @{
+  schemaVersion = 2
+  component = 'watcher'
   watcherPid = $PID
   port = $Port
+  processStartTimeUtc = $watcherProcess.StartTime.ToUniversalTime().ToString('o')
   startedAt = (Get-Date).ToString('o')
   scriptPath = $PSCommandPath
+  executablePath = $watcherProcess.Path
+  skillRoot = (Split-Path -Parent $PSScriptRoot)
 } | ConvertTo-Json
 Write-AtomicUtf8File -LiteralPath $WatcherStatePath -Content $watcherStateJson
 Write-WatcherLog "Watcher started (PID $PID, port $Port)."
@@ -72,8 +98,26 @@ try {
   while ($true) {
     $debugReady = Test-DreamDebugPort
     if ($debugReady) { $missedProbes = 0 }
+    $injectorHealth = Get-InjectorHealth
 
-    if ($debugReady -and (Test-InjectorHealthy)) {
+    if ($injectorHealth.Status -eq 'ownership-failed') {
+      $consecutiveFailures++
+      Write-WatcherLog "Injector ownership verification failed; watcher will not touch Codex: $($injectorHealth.Message)"
+      if ($consecutiveFailures -ge $MaxConsecutiveFailures) {
+        $suspendedUntil = (Get-Date).AddMinutes($CooldownMinutes)
+        Write-WatcherLog "Auto-recovery suspended until $($suspendedUntil.ToString('yyyy-MM-dd HH:mm:ss')) because injector ownership could not be verified."
+      }
+      Start-Sleep -Seconds ([Math]::Max(5, $PollSeconds))
+      continue
+    }
+    if ($injectorHealth.Status -eq 'inspection-failed' -or $injectorHealth.Status -eq 'invalid-state') {
+      $consecutiveFailures++
+      Write-WatcherLog "Injector inspection failed; watcher will not touch Codex: $($injectorHealth.Message)"
+      Start-Sleep -Seconds ([Math]::Max(5, $PollSeconds))
+      continue
+    }
+
+    if ($debugReady -and $injectorHealth.Status -eq 'healthy') {
       if ($consecutiveFailures -gt 0 -or $null -ne $suspendedUntil) {
         Write-WatcherLog 'Dream Skin is healthy again; resuming normal watch.'
       }
