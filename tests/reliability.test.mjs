@@ -125,6 +125,7 @@ test("restore attempts requested local phases after live removal fails", async (
   assert.ok(restoreIndex > uninstallIndex && finalFailureIndex > restoreIndex);
   assert.doesNotMatch(source.slice(removeIndex, uninstallIndex), /throw/);
   assert.ok(source.indexOf("Get-Command node") > source.indexOf("# Phase: live DOM removal"));
+  assert.match(source, /Write-Output "Dream Skin restore completed with \$\(\$failures\.Count\) failed phase/);
 });
 
 test("recorded PIDs are acted on only when their command line belongs to AutoSkin", async () => {
@@ -214,6 +215,7 @@ test("NoAutoRecover reconciles recorded watcher state and removes its Startup sh
   const stopIndex = source.indexOf("$stopResult = Stop-RecordedProcess");
   assert.ok(noAutoIndex >= 0 && shortcutRemovalIndex > noAutoIndex && shortcutRemovalIndex < stateReadIndex);
   assert.ok(stopIndex > stateReadIndex && stopIndex < source.indexOf("Copy-FileAtomically"));
+  assert.match(source, /Write-Output 'Codex Dream Skin installed\. Auto-recovery disabled/);
   assert.match(source, /Auto-recovery disabled; the recorded watcher was stopped and the Startup shortcut was removed/);
   assert.match(source, /Test-WatcherMutexPresent/);
   assert.match(source, /watcher mutex exists[\s\S]*current watcher may still be running/);

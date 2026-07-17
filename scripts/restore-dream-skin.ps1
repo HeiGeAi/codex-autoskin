@@ -182,7 +182,7 @@ if ($RestoreBaseTheme) {
 }
 
 if ($failures.Count -gt 0) {
-  Write-Warning "Dream Skin restore completed with $($failures.Count) failed phase(s). Requested independent local phases were still attempted."
+  Write-Output "Dream Skin restore completed with $($failures.Count) failed phase(s). Requested independent local phases were still attempted."
   foreach ($failure in $failures) {
     Write-Warning "[$($failure.Phase)] $($failure.Message)"
   }

@@ -170,10 +170,10 @@ if (-not $NoAutoRecover) {
 
 if ($NoAutoRecover) {
   if ($recordedWatcherReconciled) {
-    Write-Host 'Codex Dream Skin installed. Auto-recovery disabled; the recorded watcher was stopped and the Startup shortcut was removed.'
+    Write-Output 'Codex Dream Skin installed. Auto-recovery disabled; the recorded watcher was stopped and the Startup shortcut was removed.'
   } else {
-    Write-Host "Codex Dream Skin installed. Auto-recovery disabled; no watcher mutex was present on port $Port and the Startup shortcut was removed."
+    Write-Output "Codex Dream Skin installed. Auto-recovery disabled; no watcher mutex was present on port $Port and the Startup shortcut was removed."
   }
 } else {
-  Write-Host "Codex Dream Skin installed. Auto-recovery watcher started as PID $($watcherProcess.Id); normal Codex restarts will recover the skin automatically."
+  Write-Output "Codex Dream Skin installed. Auto-recovery watcher started as PID $($watcherProcess.Id); normal Codex restarts will recover the skin automatically."
 }
