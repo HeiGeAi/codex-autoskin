@@ -13,13 +13,13 @@
 
 ## 换图步骤
 
-1. **停 watcher**（防止它在注入器被杀时抢救）：读 `%LOCALAPPDATA%\CodexDreamSkin\watcher-state.json` 拿 PID，`Stop-Process`。测完必须重启（见下）。
-2. **停注入守护**：读 `state.json` 拿 injectorPid，`Stop-Process`。守护持有旧 payload，不停它会在页面 reload 时回灌旧图。
+1. **安全停 watcher 和注入守护**：运行 `scripts\restore-dream-skin.ps1`。脚本会核对记录进程的命令行归属后再停止，不要从状态文件取 PID 后直接 `Stop-Process`，避免 PID 复用时误杀无关进程。这里只做现场移除，不加 `-Uninstall` 或 `-RestoreBaseTheme`。
+2. **确认现场已清理**：运行 `node scripts\injector.mjs --verify --port 9335` 应返回非零；Codex 本体保持运行且调试端口仍可用。
 3. **备份旧图**：挪到 `%LOCALAPPDATA%\CodexDreamSkin\retired-themes\<theme>-v1\art-v1.png`（不要留在主题文件夹里，避免误入仓库/payload）。
 4. **换图**：新图拷成 `themes*/<theme>/art.png`（保持 theme.json 的 art 文件名不变最省事）。
 5. **改 theme.json tokens**：抄 §5.1 场景预设作为起点，再按图微调（见下"最终参数"）。
    干净场景图的遮罩要比"压鬼影"时代**轻得多**：径向 overlay 首档 ≈.68（旧值 .92+），wash 每档 ≤.25，否则饱和度全没。
-6. **向运行实例重注入**（不重启 Codex）：`node scripts/injector.mjs --once --port 9335 --screenshot <png>`。
+6. **向运行实例重注入**（不重启 Codex）：`scripts\start-dream-skin.ps1 -Port 9335`，再运行 `node scripts/injector.mjs --once --port 9335 --screenshot <png>` 取得首张截图。
    - 引擎 ≥2.2.0 会按 art 指纹自动发现图变了并重建 blob（旧版会复用旧 blob，换图必须 reload——已修，见 renderer-inject.js artSigs）。
 7. **实时调参**（别改文件重注入！）：scratchpad 的 `tune.mjs` 往 documentElement 设 inline 变量 + 截图：
    `node tune.mjs --port 9335 --shot out.png --var "--dream-fullscreen-overlay=..." --var "--dream-card-alpha=.72"`
@@ -50,6 +50,6 @@
 
 ## 踩坑备忘
 
-- **旧 blob 复用坑**：2.2.0 之前 renderer-inject 只要主题名齐全就复用上次注入的 blob URL，换图后 `--once` 重注入看到的还是旧图，极具迷惑性（token 生效了、图没变）。已用 art 指纹（dataURL 长度+尾部）修复；再遇到"换图不生效"先查引擎版本。
+- **旧 blob 复用坑**：2.2.0 之前 renderer-inject 只要主题名齐全就复用上次注入的 blob URL，换图后 `--once` 重注入看到的还是旧图，极具迷惑性（token 生效了、图没变）。已用覆盖完整 dataURL 的双哈希 art 指纹修复；再遇到"换图不生效"先查引擎版本。
 - 场景图人物在右，首页大标题在左上 —— 标题区径向渐变锚点跟着标题走（21% 29%），不要照抄旧竖条 overlay。
 - 卡 3 位于人物毛衣/手臂上方发灰的问题随新图消失（卡片区变成浅色花海）；若再换图后复发，优先调 `cards.opacity` 而不是加 wash。

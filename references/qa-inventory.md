@@ -26,12 +26,14 @@
 - Closed-app behavior: leave Codex closed for at least two watcher polls and confirm the watcher remains idle instead of launching the app.
 - Desktop pet: confirm the `initialRoute=/avatar-overlay` renderer has no Dream Skin class, style, chrome, or state and its computed body background is transparent; reload that renderer and confirm it stays clean.
 - Restore/reapply cycle: remove live skin, verify marker absent (no `codex-dream-skin`/`dream-theme-*`/`dream-layout-*` classes, no injected nodes, no state object, no inline `--dream-*` vars, no `.dream-new-task` marker, composer placeholder back to the native text), apply again, verify marker present.
+- Removal failure: force one target to retain a marker and confirm `injector.mjs --remove` exits nonzero; force live removal failure in the PowerShell selftest and confirm shortcut uninstall and base-theme restore still run before the final nonzero summary.
 - Hit testing: `document.elementsFromPoint` at the center of the sidebar new-task button, the profile button, every suggestion card, the composer input, and the send button must resolve to the real control (or a descendant), with the chrome layer and every sticker computed as `pointer-events: none`.
 - Card subtitles: themes with `cards.subtitles` show them under the native card titles; narrowing the window so the native grid drops to 3 and 2 cards must drop the matching subtitles with no misalignment; themes without the field show no subtitle.
 - Stickers: only themes with a `stickers` field show them, fullscreen home only (never banner, never chat), never overlapping a native control; public demo themes ship without stickers and README screenshots must not contain personal promo text.
 - Themed placeholder: only themes with `composer.placeholder` change the home composer placeholder; the chat/task composer keeps its native placeholder in every theme.
 - Theme validation: a theme with a missing required token, a bad folder name, or an unscoped `extra.css` must be skipped/rejected with a `[dream-skin]` warning on stderr and must not break the remaining themes.
 - Update resilience: resolve the current `OpenAI.Codex` Appx location dynamically; never store a versioned WindowsApps path.
+- Windows release gate: `node --test tests/reliability.test.mjs` and `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\windows-powershell-selftest.ps1` both pass on `windows-latest` with Node.js 22.
 
 ## Visual checks
 
