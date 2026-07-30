@@ -1,6 +1,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { validateImageContainer } from "./image-validation.mjs";
+import { assertSupportedRuntime } from "./runtime-compat.mjs";
+import {
+  auxiliarySnapshotPasses,
+  mainSnapshotPasses,
+  removalSnapshotPasses,
+} from "./verification-contract.mjs";
+
+assertSupportedRuntime();
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
@@ -312,6 +321,16 @@ function normalizeStickers(name, config) {
 
 const MIME_BY_EXT = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" };
 
+async function readRegularThemeFile(filePath, encoding = null) {
+  const stats = await fs.lstat(filePath);
+  if (!stats.isFile()) {
+    const error = new Error("theme assets must be regular files");
+    error.code = "DREAM_NON_REGULAR_FILE";
+    throw error;
+  }
+  return fs.readFile(filePath, encoding ?? undefined);
+}
+
 // Split a CSS block body into top-level rules ({prelude, body}) without parsing
 // the full grammar. Comments must already be stripped.
 function extractTopLevelRules(css) {
@@ -397,8 +416,11 @@ async function loadThemeDir(baseName, dirName) {
   const manifestPath = path.join(dir, "theme.json");
   let raw;
   try {
-    raw = await fs.readFile(manifestPath, "utf8");
-  } catch {
+    raw = await readRegularThemeFile(manifestPath, "utf8");
+  } catch (error) {
+    if (error.code === "DREAM_NON_REGULAR_FILE") {
+      warn(`theme folder "${baseName}/${dirName}" skipped: theme.json must be a regular file inside the theme folder`);
+    }
     return null; // not a theme folder
   }
   const name = dirName;
@@ -411,6 +433,10 @@ async function loadThemeDir(baseName, dirName) {
     config = JSON.parse(raw);
   } catch (error) {
     warn(`theme "${name}" skipped: theme.json is not valid JSON (${error.message})`);
+    return null;
+  }
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    warn(`theme "${name}" skipped: theme.json must contain an object`);
     return null;
   }
   if (config.name && config.name !== name) {
@@ -443,18 +469,32 @@ async function loadThemeDir(baseName, dirName) {
       continue;
     }
     try {
-      const buffer = await fs.readFile(path.join(dir, file));
-      const mime = MIME_BY_EXT[path.extname(file).toLowerCase()] ?? "image/png";
+      const buffer = await readRegularThemeFile(path.join(dir, file));
+      const extension = path.extname(file).toLowerCase();
+      if (!validateImageContainer(buffer, extension)) {
+        const label = extension === ".png" ? "PNG" : extension === ".webp" ? "WebP" : "JPEG";
+        warn(`theme "${name}" skipped: art file is not a valid ${label} image (invalid or incomplete ${label} container): ${path.join(baseName, dirName, file)}`);
+        return null;
+      }
+      const mime = MIME_BY_EXT[extension] ?? "image/png";
       artUrls[role] = `data:${mime};base64,${buffer.toString("base64")}`;
-    } catch {
+    } catch (error) {
+      if (error.code === "DREAM_NON_REGULAR_FILE") {
+        warn(`theme "${name}" skipped: art file must be a regular file inside the theme folder: ${path.join(baseName, dirName, file)}`);
+        return null;
+      }
       warn(`theme "${name}" skipped: art file not found: ${path.join(baseName, dirName, file)}`);
       return null;
     }
   }
   let extraCss = null;
   try {
-    extraCss = await fs.readFile(path.join(dir, "extra.css"), "utf8");
-  } catch {}
+    extraCss = await readRegularThemeFile(path.join(dir, "extra.css"), "utf8");
+  } catch (error) {
+    if (error.code === "DREAM_NON_REGULAR_FILE") {
+      warn(`theme "${name}": extra.css must be a regular file inside the theme folder; file ignored`);
+    }
+  }
   if (extraCss !== null) {
     const scopeErrors = validateExtraCssScope(extraCss, name);
     if (scopeErrors.length) {
@@ -524,11 +564,14 @@ function buildThemeCss(themes) {
 }
 
 async function loadPayload() {
-  const [structureCss, template, { themes, defaultTheme }] = await Promise.all([
+  const [structureCss, template, versionText, { themes, defaultTheme }] = await Promise.all([
     fs.readFile(path.join(root, "styles", "dream", "style.css"), "utf8"),
     fs.readFile(path.join(root, "assets", "renderer-inject.js"), "utf8"),
+    fs.readFile(path.join(root, "VERSION"), "utf8"),
     loadThemes(),
   ]);
+  const version = versionText.trim();
+  if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error(`Invalid VERSION value: ${version}`);
   const css = `${structureCss}\n\n/* --- generated theme token blocks --- */\n\n${buildThemeCss(themes)}\n`;
   const artAssets = Object.fromEntries(themes.map((theme) => [theme.name, theme.artUrls]));
   const manifest = {
@@ -539,6 +582,7 @@ async function loadPayload() {
     defaultLayout: DEFAULT_LAYOUT,
   };
   return template
+    .replace("__CODEX_AUTOSKIN_VERSION_JSON__", () => JSON.stringify(version))
     .replace("__DREAM_CSS_JSON__", () => JSON.stringify(css))
     .replace("__DREAM_ART_ASSETS_JSON__", () => JSON.stringify(artAssets))
     .replace("__DREAM_MANIFEST_JSON__", () => JSON.stringify(manifest));
@@ -553,19 +597,27 @@ async function applyToSession(session, payload) {
 }
 
 async function removeFromSession(session) {
-  return session.evaluate(`(() => {
+  const result = await session.evaluate(`(() => {
     window.__CODEX_DREAM_SKIN_DISABLED__ = true;
     const state = window.__CODEX_DREAM_SKIN_STATE__;
-    if (state?.cleanup) return state.cleanup();
+    state?.observer?.disconnect();
+    if (state?.timer) clearInterval(state.timer);
+    if (state?.scheduler?.timeout) clearTimeout(state.scheduler.timeout);
+    if (state?.cleanup) state.cleanup();
     const rootElement = document.documentElement;
     if (rootElement) {
-      rootElement.style.removeProperty('--dream-art');
-      rootElement.style.removeProperty('--dream-home-art');
-      rootElement.style.removeProperty('--dream-chat-art');
       for (const cls of [...rootElement.classList]) {
         if (cls === 'codex-dream-skin' || cls.startsWith('dream-theme-') || cls.startsWith('dream-layout-')) {
           rootElement.classList.remove(cls);
         }
+      }
+    }
+    const styledElements = new Set([rootElement, ...document.querySelectorAll('[style]')]);
+    for (const element of styledElements) {
+      if (!element?.style) continue;
+      for (let index = element.style.length - 1; index >= 0; index -= 1) {
+        const property = element.style.item(index);
+        if (property.startsWith('--dream-')) element.style.removeProperty(property);
       }
     }
     document.querySelectorAll('.dream-home').forEach((node) => node.classList.remove('dream-home'));
@@ -574,23 +626,68 @@ async function removeFromSession(session) {
     document.getElementById('codex-dream-skin-style')?.remove();
     document.getElementById('codex-dream-skin-chrome')?.remove();
     document.getElementById('codex-dream-skin-controls')?.remove();
-    return true;
+    delete window.__CODEX_DREAM_SKIN_STATE__;
+    delete window.__CODEX_DREAM_SKIN_DISABLED__;
+
+    const rootClasses = rootElement ? [...rootElement.classList] : [];
+    const dreamInlineProperties = [];
+    for (const element of new Set([rootElement, ...document.querySelectorAll('[style]')])) {
+      if (!element?.style) continue;
+      for (let index = 0; index < element.style.length; index += 1) {
+        const property = element.style.item(index);
+        if (property.startsWith('--dream-')) dreamInlineProperties.push(property);
+      }
+    }
+    return {
+      installed: rootElement?.classList.contains('codex-dream-skin') ?? false,
+      themeClasses: rootClasses.filter((name) => name.startsWith('dream-theme-')),
+      layoutClasses: rootClasses.filter((name) => name.startsWith('dream-layout-')),
+      stylePresent: Boolean(document.getElementById('codex-dream-skin-style')),
+      chromePresent: Boolean(document.getElementById('codex-dream-skin-chrome')),
+      legacyControlsPresent: Boolean(document.getElementById('codex-dream-skin-controls')),
+      statePresent: Object.prototype.hasOwnProperty.call(window, '__CODEX_DREAM_SKIN_STATE__'),
+      disabledMarkerPresent: Object.prototype.hasOwnProperty.call(window, '__CODEX_DREAM_SKIN_DISABLED__'),
+      homeMarkerCount: document.querySelectorAll('.dream-home').length,
+      shellMarkerCount: document.querySelectorAll('.dream-home-shell').length,
+      newTaskMarkerCount: document.querySelectorAll('.dream-new-task').length,
+      dreamInlineProperties,
+    };
   })()`);
+  return { ...result, pass: removalSnapshotPasses(result) };
 }
 
 async function verifyAuxiliarySession(session) {
-  return session.evaluate(`(() => {
+  const result = await session.evaluate(`(() => {
+    const rootElement = document.documentElement;
+    const rootClasses = rootElement ? [...rootElement.classList] : [];
+    const dreamInlineProperties = [];
+    for (const element of new Set([rootElement, ...document.querySelectorAll('[style]')])) {
+      if (!element?.style) continue;
+      for (let index = 0; index < element.style.length; index += 1) {
+        const property = element.style.item(index);
+        if (property.startsWith('--dream-')) dreamInlineProperties.push(property);
+      }
+    }
     const result = {
-      installed: document.documentElement.classList.contains('codex-dream-skin'),
+      installed: rootElement?.classList.contains('codex-dream-skin') ?? false,
+      themeClasses: rootClasses.filter((name) => name.startsWith('dream-theme-')),
+      layoutClasses: rootClasses.filter((name) => name.startsWith('dream-layout-')),
       stylePresent: Boolean(document.getElementById('codex-dream-skin-style')),
       chromePresent: Boolean(document.getElementById('codex-dream-skin-chrome')),
-      statePresent: Boolean(window.__CODEX_DREAM_SKIN_STATE__),
+      legacyControlsPresent: Boolean(document.getElementById('codex-dream-skin-controls')),
+      statePresent: Object.prototype.hasOwnProperty.call(window, '__CODEX_DREAM_SKIN_STATE__'),
+      disabledMarkerPresent: Object.prototype.hasOwnProperty.call(window, '__CODEX_DREAM_SKIN_DISABLED__'),
+      homeMarkerCount: document.querySelectorAll('.dream-home').length,
+      shellMarkerCount: document.querySelectorAll('.dream-home-shell').length,
+      newTaskMarkerCount: document.querySelectorAll('.dream-new-task').length,
+      dreamInlineProperties,
       bodyBackgroundImage: getComputedStyle(document.body).backgroundImage,
+      bodyBackgroundColor: getComputedStyle(document.body).backgroundColor,
       viewport: { width: innerWidth, height: innerHeight },
     };
-    result.pass = !result.installed && !result.stylePresent && !result.chromePresent && !result.statePresent;
     return result;
   })()`);
+  return { ...result, pass: auxiliarySnapshotPasses(result) };
 }
 
 async function inspectAuxiliaryTarget(target, { remove = false } = {}) {
@@ -604,7 +701,7 @@ async function inspectAuxiliaryTarget(target, { remove = false } = {}) {
 }
 
 async function verifySession(session) {
-  return session.evaluate(`(() => {
+  const result = await session.evaluate(`(() => {
     const box = (node) => {
       if (!node) return null;
       const r = node.getBoundingClientRect();
@@ -616,10 +713,13 @@ async function verifySession(session) {
     const state = window.__CODEX_DREAM_SKIN_STATE__;
     const result = {
       installed: document.documentElement.classList.contains('codex-dream-skin'),
+      statePresent: Object.prototype.hasOwnProperty.call(window, '__CODEX_DREAM_SKIN_STATE__'),
       version: state?.version ?? null,
       theme: state?.theme ?? null,
       layout: state?.layout ?? null,
       themes: state?.themes ?? null,
+      themeClassActive: Boolean(state?.theme && document.documentElement.classList.contains('dream-theme-' + state.theme)),
+      layoutClassActive: Boolean(state?.layout && document.documentElement.classList.contains('dream-layout-' + state.layout)),
       stylePresent: Boolean(document.getElementById('codex-dream-skin-style')),
       chromePresent: Boolean(document.getElementById('codex-dream-skin-chrome')),
       legacyControlsPresent: Boolean(document.getElementById('codex-dream-skin-controls')),
@@ -636,15 +736,9 @@ async function verifySession(session) {
         y: document.documentElement.scrollHeight > document.documentElement.clientHeight,
       },
     };
-    result.pass = result.installed && result.stylePresent && result.chromePresent &&
-      Array.isArray(result.themes) && result.themes.length > 0 && result.themes.includes(result.theme) &&
-      ['banner', 'fullscreen'].includes(result.layout) &&
-      !result.legacyControlsPresent &&
-      result.chromePointerEvents === 'none' && Boolean(result.composer) && Boolean(result.sidebar) &&
-      (!result.homePresent || (Boolean(result.hero) &&
-        (!result.suggestionsPresent || (result.cards.length >= 2 && result.cards.length <= 4))));
     return result;
   })()`);
+  return { ...result, pass: mainSnapshotPasses(result) };
 }
 
 async function waitForVerifiedSession(session, timeoutMs) {
@@ -686,7 +780,9 @@ async function runOneShot(options) {
   }
   const targets = options.mode === "remove" ? allTargets : mainTargets;
   const auxiliaryTargets = allTargets.filter((target) => !isMainRendererTarget(target));
-  const payload = (options.mode === "once" || options.reload) ? await loadPayload() : null;
+  const payload = options.mode !== "remove" && (options.mode === "once" || options.reload)
+    ? await loadPayload()
+    : null;
   const results = [];
   const auxiliaryResults = [];
   if (options.mode !== "remove") {
@@ -700,7 +796,8 @@ async function runOneShot(options) {
   for (const target of targets) {
     const session = await connectTarget(target);
     try {
-      if (options.mode === "remove") await removeFromSession(session);
+      let removalResult = null;
+      if (options.mode === "remove") removalResult = await removeFromSession(session);
       else if (options.mode === "once") await applyToSession(session, payload);
       if (options.mode === "once") {
         await new Promise((resolve) => setTimeout(resolve, 850));
@@ -708,10 +805,11 @@ async function runOneShot(options) {
       if (options.reload) {
         await session.send("Page.reload", { ignoreCache: true });
         await new Promise((resolve) => setTimeout(resolve, 1600));
-        if (options.mode !== "remove") await applyToSession(session, payload);
+        if (options.mode === "remove") removalResult = await removeFromSession(session);
+        else await applyToSession(session, payload);
       }
       const verified = options.mode === "remove"
-        ? await session.evaluate("!document.documentElement.classList.contains('codex-dream-skin')")
+        ? removalResult
         : (options.reload || options.mode === "once")
           ? await waitForVerifiedSession(session, options.timeoutMs)
           : await verifySession(session);
@@ -727,7 +825,7 @@ async function runOneShot(options) {
     targets: results,
     auxiliaryTargets: auxiliaryResults,
   }, null, 2));
-  if (options.mode === "verify" && (
+  if (["verify", "remove"].includes(options.mode) && (
     results.some((item) => !item.result.pass) || auxiliaryResults.some((item) => !item.result.pass)
   )) process.exitCode = 2;
 }

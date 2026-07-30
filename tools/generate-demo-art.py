@@ -14,12 +14,28 @@ Outputs:
 import math
 import os
 import random
+import tempfile
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 W, H = 1920, 1280
+
+
+def save_png_atomic(image, path):
+    """Write beside the destination, then atomically replace it on success."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    file_descriptor, temporary_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=os.path.dirname(path)
+    )
+    os.close(file_descriptor)
+    try:
+        image.save(temporary_path, "PNG", optimize=True)
+        os.replace(temporary_path, path)
+    finally:
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
 
 
 def vertical_gradient(size, stops):
@@ -32,7 +48,7 @@ def vertical_gradient(size, stops):
         vals = np.array([s[1][c] for s in stops], dtype=float)
         channels.append(np.interp(ys, ts, vals))
     grad = np.stack(channels, axis=-1).astype(np.uint8)
-    return Image.fromarray(np.repeat(grad[:, None, :], w, axis=1), "RGB")
+    return Image.fromarray(np.repeat(grad[:, None, :], w, axis=1))
 
 
 def radial_glow(size, center, radius, color, peak_alpha):
@@ -45,7 +61,7 @@ def radial_glow(size, center, radius, color, peak_alpha):
     layer = np.zeros((h, w, 4), dtype=np.uint8)
     layer[..., 0], layer[..., 1], layer[..., 2] = color
     layer[..., 3] = alpha.astype(np.uint8)
-    return Image.fromarray(layer, "RGBA")
+    return Image.fromarray(layer)
 
 
 def aurora_veil():
@@ -191,9 +207,8 @@ def main():
         os.path.join(ROOT, "themes", "ember-bloom", "art.png"): ember_bloom,
     }
     for path, builder in targets.items():
-        os.makedirs(os.path.dirname(path), exist_ok=True)
         image = builder()
-        image.save(path, "PNG", optimize=True)
+        save_png_atomic(image, path)
         print(f"wrote {path} ({image.size[0]}x{image.size[1]})")
 
 
